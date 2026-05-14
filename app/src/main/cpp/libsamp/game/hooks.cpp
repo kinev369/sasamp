@@ -78,6 +78,48 @@ extern CGUI *pGUI;
 // Neiae/SAMP
 bool g_bPlaySAMP = false;
 
+static bool g_bFrontendMapActive = false;
+static bool g_bRenderingFrontendMap = false;
+
+static float GetFrontendMapScale()
+{
+	if (!RsGlobal || RsGlobal->maximumWidth < 2 || RsGlobal->maximumHeight < 2)
+	{
+		return 1.0f;
+	}
+	const float screenW = (float)RsGlobal->maximumWidth;
+	const float screenH = (float)RsGlobal->maximumHeight;
+	const float mapActiveW = screenH * (640.0f / 448.0f);
+	if (mapActiveW < 2.0f || screenW <= mapActiveW + 2.0f)
+	{
+		return 1.0f;
+	}
+	return screenW / mapActiveW;
+}
+
+static RwIm2DVertex* GetFrontendMapVertices(RwIm2DVertex* vertices, RwInt32 numVertices, std::vector<RwIm2DVertex>& scaled)
+{
+	const float scaleX = GetFrontendMapScale();
+	if (!g_bRenderingFrontendMap || scaleX <= 1.0f || !vertices || numVertices <= 0)
+	{
+		return vertices;
+	}
+	scaled.assign(vertices, vertices + numVertices);
+	for (RwInt32 i = 0; i < numVertices; ++i) {
+		scaled[i].x *= scaleX;
+	}
+	return scaled.data();
+}
+
+static void ScaleFrontendMapTouch(int* posX)
+{
+	const float scaleX = GetFrontendMapScale();
+	if (scaleX <= 1.0f || !posX)
+	{
+		return;
+	}
+	*posX = (int)((float)*posX / scaleX + 0.5f);
+}
 void InitInMenu();
 void MainLoop();
 void HookCPad();
@@ -199,6 +241,35 @@ void InitialiseRenderWare_hook()
 	InitialiseRenderWare();
 }
 
+void (*MobileMenu__Update)(uintptr_t* thiz);
+void MobileMenu__Update_hook(uintptr_t* thiz)
+{
+	g_bFrontendMapActive = false;
+	MobileMenu__Update(thiz);
+}
+
+void (*Menu_MapUpdate)(float deltaTime);
+void Menu_MapUpdate_hook(float deltaTime)
+{
+	g_bFrontendMapActive = true;
+	Menu_MapUpdate(deltaTime);
+}
+
+void (*Menu_MapRender)();
+void Menu_MapRender_hook()
+{
+	g_bRenderingFrontendMap = true;
+	Menu_MapRender();
+	g_bRenderingFrontendMap = false;
+}
+
+RwBool (*RwIm2DRenderPrimitive_orig)(RwPrimitiveType primType, RwIm2DVertex* vertices, RwInt32 numVertices);
+RwBool RwIm2DRenderPrimitive_hook(RwPrimitiveType primType, RwIm2DVertex* vertices, RwInt32 numVertices)
+{
+	std::vector<RwIm2DVertex> scaled;
+	return RwIm2DRenderPrimitive_orig(primType, GetFrontendMapVertices(vertices, numVertices, scaled), numVertices);
+}
+
 /* ====================================================== */
 #include "..//keyboard.h"
 
@@ -231,8 +302,12 @@ void TouchEvent_hook(int type, int num, int posX, int posY)
 		}
 	}
 
-	if(bRet) 
-		return TouchEvent(type, num, posX, posY);
+	int gameX = posX;
+	if(g_bFrontendMapActive)
+	{
+		ScaleFrontendMapTouch(&gameX);
+	}
+	return TouchEvent(type, num, gameX, posY);
 }
 
 /* ====================================================== */
@@ -1669,6 +1744,10 @@ void InstallHooks()
 	CHook::Redirect(g_libGTASA, 0x003F646C, &Render2dStuff);
 
 	CHook::InlineHook(g_libGTASA, 0x00269740, &TouchEvent_hook, &TouchEvent);
+	CHook::InlineHook(g_libGTASA, 0x0029A730, &MobileMenu__Update_hook, &MobileMenu__Update);
+	CHook::InlineHook(g_libGTASA, 0x002A9AB8, &Menu_MapUpdate_hook, &Menu_MapUpdate);
+	CHook::InlineHook(g_libGTASA, 0x002AAD00, &Menu_MapRender_hook, &Menu_MapRender);
+	CHook::InlineHook(g_libGTASA, 0x001E2908, &RwIm2DRenderPrimitive_hook, &RwIm2DRenderPrimitive_orig);
 
 	CHook::InlineHook(g_libGTASA, 0x0044137C, &CRadar__GetRadarTraceColor_hook, &CRadar__GetRadarTraceColor); // dangerous
 	CHook::InlineHook(g_libGTASA, 0x00442770, &CRadar__SetCoordBlip_hook, &CRadar__SetCoordBlip);
